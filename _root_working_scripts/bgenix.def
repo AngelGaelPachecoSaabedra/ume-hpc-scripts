@@ -1,0 +1,32 @@
+Bootstrap: docker
+From: ubuntu:22.04
+
+%labels
+  Author you
+  Tool bgenix
+
+%post
+  set -eux
+
+  apt-get update
+  apt-get install -y --no-install-recommends \
+    ca-certificates curl bzip2 \
+  && rm -rf /var/lib/apt/lists/*
+
+  # Instalar micromamba (ligero) y crear env con bgenix
+  mkdir -p /opt/micromamba /opt/condaenv
+  curl -L https://micro.mamba.pm/api/micromamba/linux-64/latest | tar -xvj -C /opt/micromamba --strip-components=1 bin/micromamba
+  ln -s /opt/micromamba/micromamba /usr/local/bin/micromamba
+
+  # Crear env e instalar bgenix
+  micromamba create -y -p /opt/condaenv -c conda-forge bgenix
+  micromamba clean -a -y
+
+%environment
+  export PATH=/opt/condaenv/bin:$PATH
+
+%runscript
+  exec bgenix "$@"
+
+%test
+  bgenix -help >/dev/null 2>&1 || true

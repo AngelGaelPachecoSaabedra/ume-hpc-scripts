@@ -1,0 +1,62 @@
+version: "3.9"
+
+# Full stack: pgs-dashboard + PostgreSQL
+# Adjust volume mounts and secrets for your environment.
+
+secrets:
+  db_password:
+    file: ./secrets/db_password.txt   # create this file locally, never commit it
+
+services:
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: pgs_dashboard
+      POSTGRES_USER: pgs_user
+      POSTGRES_PASSWORD_FILE: /run/secrets/db_password
+    secrets:
+      - db_password
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ../sql/schema.sql:/docker-entrypoint-initdb.d/schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pgs_user -d pgs_dashboard"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  pgs-dashboard:
+    build:
+      context: ..
+      dockerfile: Containerfile
+    image: pgs-dashboard:latest
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    secrets:
+      - db_password
+    environment:
+      APP_DATA_DIR: /data
+      APP_WORK_DIR: /work
+      APP_DB_HOST: postgres
+      APP_DB_NAME: pgs_dashboard
+      APP_DB_USER: pgs_user
+      APP_DB_PASSWORD_FILE: /run/secrets/db_password
+      APP_REMOTE_ENABLED: "true"
+      APP_TRUSTED_PROXY: "true"
+    volumes:
+      - /path/to/scores:/data:ro          # ← set to your scores directory
+      - pgs_work:/work
+      # Optional: pipeline scripts mount
+      # - /path/to/pipeline_scripts:/pipeline_scripts:ro
+      # Optional: annotation outputs mount
+      # - /path/to/annotations:/annotations:ro
+
+volumes:
+  pgdata:
+  pgs_work:

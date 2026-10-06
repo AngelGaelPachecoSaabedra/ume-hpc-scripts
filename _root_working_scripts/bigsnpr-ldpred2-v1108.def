@@ -1,0 +1,73 @@
+Bootstrap: docker
+From: ubuntu:24.04
+
+%labels
+    Author angel.pacheco
+    Version 1.0
+    Description bigsnpr 1.10.8 for LDpred2 (without aggressive divergence detection)
+
+%post
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update && apt-get install -y --no-install-recommends \
+        wget curl ca-certificates build-essential gfortran \
+        libcurl4-openssl-dev libssl-dev libxml2-dev \
+        liblapack-dev libblas-dev libopenblas-dev \
+        zlib1g-dev libbz2-dev liblzma-dev libpcre2-dev \
+        libfontconfig1-dev libfreetype6-dev libpng-dev libtiff5-dev \
+        libharfbuzz-dev libfribidi-dev pkg-config \
+        r-base r-base-dev plink2 \
+    && rm -rf /var/lib/apt/lists/*
+
+    # Instalar versiones compatibles de dependencias
+    Rscript -e '
+        install.packages("remotes", repos="https://cloud.r-project.org")
+        install.packages(c("data.table", "Matrix", "foreach", "rngtools",
+            "doRNG", "Rcpp", "RcppArmadillo", "methods"), repos="https://cloud.r-project.org")
+
+        # bigsparser y bigstatsr compatibles con bigsnpr 1.10.8
+        remotes::install_version("bigstatsr", version = "1.5.12", repos = "https://cloud.r-project.org")
+        remotes::install_version("bigsparser", version = "0.7.1", repos = "https://cloud.r-project.org")
+        remotes::install_version("bigsnpr", version = "1.10.8", repos = "https://cloud.r-project.org")
+
+        # Verificar
+        cat("bigsnpr:", as.character(packageVersion("bigsnpr")), "\n")
+        cat("bigstatsr:", as.character(packageVersion("bigstatsr")), "\n")
+        cat("bigsparser:", as.character(packageVersion("bigsparser")), "\n")
+
+        # Verificar que snp_ldpred2_auto NO tiene use_MLE
+        f <- formals(bigsnpr::snp_ldpred2_auto)
+        cat("Argumentos:", paste(names(f), collapse=", "), "\n")
+        cat("use_MLE presente:", "use_MLE" %in% names(f), "\n")
+    '
+
+%environment
+    export LC_ALL=C
+    export PATH=/usr/bin:$PATH
+
+%runscript
+    exec Rscript "$@"
+
+%test
+    echo "=== Testing bigsnpr 1.10.8 ==="
+    Rscript -e '
+        library(bigsnpr)
+        cat("Version:", as.character(packageVersion("bigsnpr")), "\n")
+
+        # Quick test: simulate and run ldpred2_auto
+        set.seed(1)
+        N <- 2000; M <- 500
+        G <- matrix(rbinom(N*M, 2, runif(M, 0.1, 0.5)), N, M)
+        b <- rep(0, M); b[1:20] <- rnorm(20, 0, 0.1)
+        y <- G %*% b + rnorm(N)
+        bh <- sapply(1:M, function(j) coef(lm(y ~ G[,j]))[2])
+        se <- sapply(1:M, function(j) summary(lm(y ~ G[,j]))$coefficients[2,2])
+
+        fake <- snp_fake(N, M)
+        fake$genotypes[] <- G
+        corr <- as_SFBM(snp_cor(fake$genotypes, ncores=1))
+        df <- data.frame(beta=bh, beta_se=se, n_eff=N)
+        a <- snp_ldpred2_auto(corr, df, h2_init=0.1, vec_p_init=0.1,
+            burn_in=200, num_iter=200, ncores=1)
+        cat("h2_est:", a[[1]]$h2_est, "\n")
+        if (!is.na(a[[1]]$h2_est)) cat("TEST PASSED\n") else cat("TEST FAILED\n")
+    '

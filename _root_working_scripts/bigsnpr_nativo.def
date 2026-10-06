@@ -1,0 +1,74 @@
+Bootstrap: docker
+From: ubuntu:24.04
+
+%labels
+    Author angel.pacheco
+    Version 1.12.21
+    Description bigsnpr 1.12.21 compiled natively to fix C++ OpenBLAS mismatch bug
+
+%post
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update && apt-get install -y --no-install-recommends \
+        wget curl ca-certificates build-essential gfortran \
+        libcurl4-openssl-dev libssl-dev libxml2-dev \
+        liblapack-dev libblas-dev libopenblas-dev \
+        zlib1g-dev libbz2-dev liblzma-dev libpcre2-dev \
+        libfontconfig1-dev libfreetype6-dev libpng-dev libtiff5-dev \
+        libharfbuzz-dev libfribidi-dev pkg-config \
+        r-base r-base-dev plink2 \
+    && rm -rf /var/lib/apt/lists/*
+
+    # Instalar desde el código fuente para que GCC optimice el C++ al procesador MCPS
+    Rscript -e '
+        install.packages("remotes", repos="https://cloud.r-project.org")
+        install.packages(c("data.table", "Matrix", "foreach", "rngtools",
+            "doRNG", "Rcpp", "RcppArmadillo", "methods","R.utils"), repos="https://cloud.r-project.org")
+
+        # Instalar las versiones actuales de CRAN (compilación nativa C++)
+        install.packages("bigsparser", repos = "https://cloud.r-project.org")
+        install.packages("bigstatsr", repos = "https://cloud.r-project.org")
+        install.packages("bigsnpr", repos = "https://cloud.r-project.org")
+
+        cat("\n=== VERSIONES COMPILADAS ===\n")
+        cat("bigsnpr:", as.character(packageVersion("bigsnpr")), "\n")
+        cat("bigstatsr:", as.character(packageVersion("bigstatsr")), "\n")
+        cat("bigsparser:", as.character(packageVersion("bigsparser")), "\n")
+    '
+
+%environment
+    export LC_ALL=C
+    export PATH=/usr/bin:$PATH
+    export OPENBLAS_NUM_THREADS=1
+    export OMP_NUM_THREADS=1
+
+%test
+    echo "=== Testing bigsnpr (Native Compilation) ==="
+    Rscript -e '
+        library(bigsnpr)
+        cat("Version:", as.character(packageVersion("bigsnpr")), "\n")
+
+        set.seed(1)
+        N <- 500; M <- 200
+        G <- matrix(rbinom(N*M, 2, runif(M, 0.1, 0.5)), N, M)
+        b <- rep(0, M); b[1:20] <- rnorm(20, 0, 0.1)
+        y <- G %*% b + rnorm(N)
+        bh <- sapply(1:M, function(j) coef(lm(y ~ G[,j]))[2])
+        se <- sapply(1:M, function(j) summary(lm(y ~ G[,j]))$coefficients[2,2])
+
+        fake <- snp_fake(N, M)
+        fake$genotypes[] <- G
+        corr <- as_SFBM(snp_cor(fake$genotypes, ncores=1))
+        df <- data.frame(beta=bh, beta_se=se, n_eff=N)
+        
+        # Corremos auto con los parámetros conflictivos
+        a <- snp_ldpred2_auto(corr, df, h2_init=0.1, vec_p_init=0.1,
+            burn_in=200, num_iter=200, ncores=1, use_MLE=FALSE)
+            
+        cat("h2_est:", a[[1]]$h2_est, "\n")
+        if (!is.na(a[[1]]$h2_est)) {
+            cat("TEST PASSED: ¡El bug desapareció con la compilación nativa!\n")
+        } else {
+            cat("TEST FAILED\n")
+            quit(status=1)
+        }
+    '

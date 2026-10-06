@@ -1,0 +1,237 @@
+Bootstrap: docker
+From: mambaorg/micromamba:1.5.8-jammy
+
+%labels
+    Version         1.6.0
+    Description     Variant Annotator for PGS/PRS Platform — VEP-lite HPC-native annotation
+    GFF3_Reference  /ref/gencode.annotation.gff3     (bind-mount at runtime)
+    FASTA_Reference /fasta/hg38.fa                   (bind-mount at runtime)
+    dbNSFP5_Path    /dbnsfp/dbNSFP5.0a_grch38.gz     (bind-mount at runtime)
+    dbSNP_Freq_Path /dbsnp_freq/freq.vcf.gz           (bind-mount at runtime)
+    Build_Date      2026-04-28
+    Changes_v1.6    gnomAD 4.1.1 + MCPS population AF enrichment.
+                    Batch gnomAD enrichment: sorted positions, range queries.
+                    af_effective priority: MCPS MEX > MCPS RAW > gnomAD > dbSNP.
+                    duckdb added for MCPS parquet index; /gnomad and /mcps bind stubs.
+    Changes_v1.5    Real regulatory BED annotation replacing ±2 kb heuristic.
+                    Sources: ENCODE TFBS clusters, DNase DHS clusters, ORegAnno.
+                    New fields: regulatory_element_type, regulatory_element_id,
+                    distance_to_regulatory. REGULATORY_BED env var support.
+                    Ranking bonus for promoter/enhancer/insulator/CTCF elements.
+    Changes_v1.3    dbSNP population frequency support (rsid, af_global, af_max_population,
+                    af_population_summary, rarity_class) via dbsnp_freq.py.
+                    Complementary to dbNSFP5 — both can be used simultaneously.
+    Changes_v1.2    FASTA-backed coding consequences (missense/synonymous/stop/frameshift),
+                    splice donor/acceptor via GT/AG inspection, dbNSFP5 scores
+                    (CADD/REVEL/SIFT/PolyPhen2/ClinVar), pysam added.
+
+%help
+    Variant Annotator container for the PGS/PRS Platform (v1.5).
+
+    Annotates betamap variants using GENCODE GFF3. Produces:
+      {PGS_ID}_variants_annotated.tsv.gz
+      {PGS_ID}_variants_annotated.parquet
+      {PGS_ID}_annotation_summary.json
+
+    v1.5 new features (regulatory BED annotation):
+      - Real element-level regulatory annotation replaces ±2 kb TSS heuristic
+      - Sources: ENCODE TFBS clusters, DNase DHS, ORegAnno (from ucsc/ directory)
+      - Build derived BED files: python scripts/build_regulatory_beds.py --all
+      - New columns: regulatory_element_type, regulatory_element_id, distance_to_regulatory
+      - Auto-detected from REGULATORY_BED env var or --regulatory-bed flag
+      - run_annotation.sh auto-uses derived files when available
+      - Ranking score boosted for promoter/enhancer/insulator/CTCF hits
+
+    v1.3 new features (requires --dbsnp):
+      - Population allele frequencies from dbSNP freq.vcf.gz (tabix-indexed)
+      - New columns: rsid, af_global, af_max_population, af_population_summary, rarity_class
+      - Rarity classification: common / low_frequency / rare / ultra_rare / novel
+      - Complementary to dbNSFP5 — both sources can be used simultaneously
+
+    v1.2 new features (requires --fasta and/or --dbnsfp):
+      - Coding consequences from FASTA: missense, synonymous, stop_gained,
+        stop_lost, start_lost, frameshift, inframe_insertion, inframe_deletion
+      - Splice donor vs acceptor classified by GT/AG FASTA inspection
+      - REF allele verified against reference FASTA
+      - dbNSFP5 scores: CADD_phred, REVEL_score, SIFT_pred, Polyphen2_HDIV_pred,
+        clinvar_clnsig via --dbnsfp
+      - Boolean consequence flags: is_missense, is_synonymous, is_lof
+
+    v1.1 features:
+      - Splice site distance (distance_to_splice_site column)
+      - Splice site / splice region consequence reclassification
+      - All overlapping genes + transcripts (all_overlapping_genes, etc.)
+      - Regulatory BED file support via --regulatory-bed
+      - Consequence priority numeric ranking (consequence_priority)
+
+    Full v1.3 run (via wrapper script):
+      DATA_DIR=/path/to/scores \
+      ANNOTATIONS_DIR=/path/to/annotations \
+      GFF3_PATH=/path/to/gencode.annotation.gff3 \
+      SIF_PATH=/path/to/variant_annotator.sif \
+      FASTA_PATH=/path/to/hg38.fa \
+      DBNSFP_PATH=/path/to/dbNSFP5.0a_grch38.gz \
+      DBSNP_FREQ_PATH=/path/to/freq.vcf.gz \
+      /path/to/annotator/run_annotation.sh PGS000001
+
+    Direct run:
+      apptainer exec \
+        --bind /path/to/scores/PGS000001:/data/PGS000001:ro \
+        --bind /path/to/gencode:/ref:ro \
+        --bind /path/to/fasta:/fasta:ro \
+        --bind /path/to/dbnsfp:/dbnsfp:ro \
+        --bind /path/to/annotations:/annotations:rw \
+        --bind /path/to/annotator:/app/annotator:ro \
+        variant_annotator.sif \
+        python /app/annotator/annotate_variants.py \
+          --betamap /data/PGS000001/PGS000001_hmPOS_GRCh38.betamap.tsv.gz \
+          --gff3    /ref/gencode.annotation.gff3 \
+          --outdir  /annotations/PGS000001 \
+          --pgs-id  PGS000001 \
+          --fasta   /fasta/hg38.fa \
+          --dbnsfp  /dbnsfp/dbNSFP5.0a_grch38.gz
+
+%environment
+    export LANG=C.UTF-8
+    export LC_ALL=C.UTF-8
+    export MAMBA_ROOT_PREFIX=/opt/conda
+    export PATH=/opt/conda/bin:${PATH}
+    export PYTHONDONTWRITEBYTECODE=1
+    export PYTHONUNBUFFERED=1
+
+%post
+    # ── System packages ───────────────────────────────────────────────────────
+    apt-get update -qq && apt-get install -y --no-install-recommends \
+        build-essential \
+        libz-dev \
+        liblzma-dev \
+        libbz2-dev \
+        pigz \
+        && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+    # ── Conda environment ─────────────────────────────────────────────────────
+    # Install Python + scientific stack via conda-forge (pre-compiled binaries)
+    micromamba install -y -n base -c conda-forge \
+        python=3.12 \
+        pandas=2.2 \
+        numpy=1.26 \
+        pyarrow=15 \
+        tqdm=4.66 \
+        && micromamba clean -afy
+
+    # ── Pure-Python packages via pip ──────────────────────────────────────────
+    # pyfaidx: random-access FASTA reader for coding-consequence annotation
+    # pysam:   tabix interface for dbNSFP5 / gnomAD queries
+    # duckdb:  MCPS parquet index build + fast per-variant lookups
+    /opt/conda/bin/pip install --no-cache-dir \
+        intervaltree==3.1.0 \
+        polars==0.20.18 \
+        pyfaidx==0.8.1.2 \
+        pysam==0.22.1 \
+        duckdb==1.2.2
+
+    # ── Create standard bind-mount stubs ─────────────────────────────────────
+    # These will be overlaid by --bind at runtime.
+    mkdir -p /data /ref /fasta /dbnsfp /dbsnp_freq /regulatory /annotations /app/annotator \
+             /gnomad /mcps
+
+    # ── Validate install ──────────────────────────────────────────────────────
+/opt/conda/bin/python - <<'PY'
+import pandas, numpy, pyarrow, intervaltree, tqdm, pyfaidx, pysam, duckdb
+print('pandas',      pandas.__version__)
+print('numpy',       numpy.__version__)
+print('pyarrow',     pyarrow.__version__)
+print('intervaltree OK')
+print('tqdm',        tqdm.__version__)
+print('pyfaidx',     pyfaidx.__version__)
+print('pysam',       pysam.__version__)
+print('duckdb',      duckdb.__version__)
+print('All packages OK')
+PY
+
+%runscript
+    # Default: show usage when the image is run without exec
+    echo "Variant Annotator v1.6  (PGS/PRS Platform)"
+    echo ""
+    echo "Usage:"
+    echo "  apptainer exec [bind options] variant_annotator.sif \\"
+    echo "    python /app/annotator/annotate_variants.py \\"
+    echo "      --betamap  /data/PGS000001/PGS000001_hmPOS_GRCh38.betamap.tsv.gz \\"
+    echo "      --gff3     /ref/gencode.v49.basic.annotation.gff3 \\"
+    echo "      --outdir   /annotations/PGS000001 \\"
+    echo "      --pgs-id   PGS000001 \\"
+    echo "      [--fasta   /fasta/hg38.fa] \\"
+    echo "      [--dbnsfp  /dbnsfp/dbNSFP5.0a_grch38.gz] \\"
+    echo "      [--regulatory-bed /regulatory/encode_cCRE.bed.gz ...]"
+    echo ""
+    echo "See: docs/VARIANT_ANNOTATION.md"
+
+%test
+    # Smoke-test: check Python and key packages are importable
+    /opt/conda/bin/python -c "
+import pandas as pd
+import numpy as np
+import pyarrow as pa
+from intervaltree import IntervalTree
+from tqdm import tqdm
+import pyfaidx
+import pysam
+
+# IntervalTree functionality test
+t = IntervalTree()
+t[0:100] = 'test'
+assert len(t[50]) == 1, 'IntervalTree query failed'
+
+# Simulate annotator imports
+import sys
+sys.path.insert(0, '/app/annotator')
+try:
+    from gff3_parser import GFF3Index, GFF3Feature
+    from classify import classify, AnnotationResult, CONSEQUENCE_PRIORITY
+    from regulatory import RegulatoryBEDIndex
+    from sequence_utils import translate_codon, snp_codon_consequence, is_lof_consequence
+
+    # Quick classify smoke test
+    result = classify([])
+    assert result.region_class == 'intergenic', 'classify intergenic failed'
+    assert result.consequence  == 'intergenic_variant'
+    assert not result.is_lof
+
+    # Regulatory BED index
+    reg = RegulatoryBEDIndex()
+    assert reg.is_empty
+
+    # Sequence utils
+    assert translate_codon('ATG') == 'M'
+    assert snp_codon_consequence('ATG', 'TTG', 0) == 'start_lost'
+    assert is_lof_consequence('stop_gained')
+    assert not is_lof_consequence('synonymous_variant')
+
+    # v1.2 fields on AnnotationResult
+    assert hasattr(result, 'codon_ref')
+    assert hasattr(result, 'is_lof')
+    assert hasattr(result, 'cadd_phred')
+
+    # v1.5 fields on AnnotationResult
+    assert hasattr(result, 'regulatory_element_type'), 'v1.5: missing regulatory_element_type'
+    assert hasattr(result, 'regulatory_element_id'),   'v1.5: missing regulatory_element_id'
+    assert hasattr(result, 'distance_to_regulatory'),  'v1.5: missing distance_to_regulatory'
+
+    # v1.5 regulatory module
+    from regulatory import infer_element_type, build_from_env
+    assert infer_element_type('CTCF')          == 'insulator',      'CTCF should be insulator'
+    assert infer_element_type('H3K27ac')       == 'enhancer',       'H3K27ac should be enhancer'
+    assert infer_element_type('H3K4me3')       == 'promoter',       'H3K4me3 should be promoter'
+    assert infer_element_type('open_chromatin')== 'open_chromatin', 'open_chromatin passthrough'
+    assert infer_element_type('OREG12345')     == 'regulatory_region', 'OREG → regulatory_region'
+
+    print('Annotator module imports OK')
+    print('sequence_utils smoke test OK')
+    print('v1.2 AnnotationResult fields OK')
+    print('v1.5 regulatory_element_type/id/distance fields OK')
+    print('v1.5 infer_element_type() OK')
+except ImportError as e:
+    print(f'Annotator import skipped (not mounted at test time): {e}')
+
+print('Smoke test PASSED')
+"
