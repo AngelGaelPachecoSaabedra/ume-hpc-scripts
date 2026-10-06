@@ -33,7 +33,7 @@ preparación de fenotipos y utilidades de cómputo distribuido (Spark + GPU, Das
 | `Scripts_compartidos/` | Scripts compartidos entre proyectos (conversión a Zarr, PRS Spark+GPU, match CADD, cliente PGS Catalog). |
 | `old_scripts/` | Versiones previas del pipeline LDpred2 (histórico). |
 | `scripts_todos/` | Scripts sueltos de depuración/diagnóstico (LDpred2 chr22, chrX, conversiones, etc.). |
-| `_root_working_scripts/` | Copias de trabajo que vivían sueltas en la raíz del respaldo (muchas son variantes/versiones de los scripts anteriores). Se conservan tal cual para no perder historial; pueden depurarse más adelante. |
+| `_root_working_scripts/` | Copias de trabajo que vivían sueltas en la raíz del respaldo; sobre todo variantes/versiones (`v2…v8`, *sex-specific*, *genome-wide*, recuperación, diagnóstico) de los pipelines anteriores. Depurado de duplicados exactos; solo se conservan las versiones únicas. |
 
 ## Tecnologías
 
@@ -48,3 +48,8 @@ preparación de fenotipos y utilidades de cómputo distribuido (Spark + GPU, Das
   (particiones, GPUs, memoria, tiempo) antes de ejecutar.
 - Hay archivos con sufijos de versión (`_v2`…`_v8`, `_fix`, `_recover`) que documentan la
   evolución de cada pipeline; se mantienen intencionalmente.
+- **Cada carpeta tiene su propio `README.md`** que describe, uno por uno, qué hace cada
+  script y el orden de ejecución.
+- Los scripts duplicados (copias de contenido idéntico, verificadas por hash) se
+  depuraron: cada script vive en una única carpeta canónica. Las dos apps `pgscat/` y
+  `app_pgs/` se conservan completas por separado (comparten módulos por diseño).
